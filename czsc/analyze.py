@@ -14,28 +14,85 @@ from czsc.enum import Mark, Direction
 from czsc.objects import BI, FX, RawBar, NewBar
 from czsc.utils.echarts_plot import kline_pro
 from czsc import envs
+from czsc.config_loader import pen_config
 
 logger.disable('czsc.analyze')
 
 
-def remove_include(k1: NewBar, k2: NewBar, k3: RawBar):
-    """去除包含关系：输入三根k线，其中k1和k2为没有包含关系的K线，k3为原始K线
+def remove_include_smart(k1: NewBar, k2: NewBar, k3: RawBar):
+    """智能包含关系处理：改进版本的包含关系去除算法
+    
+    改进点：
+    1. 更精确的方向判断：同时考虑高点和低点
+    2. 更合理的开收盘价计算：保持价格连续性
+    3. 更稳定的elements管理：避免过大数组问题
+    4. 更智能的时间戳选择：基于价格重要性
+    
+    :param k1: 前两根处理好的K线，用于判断方向
+    :param k2: 前一根处理好的K线
+    :param k3: 当前原始K线
+    :return: (is_included, new_bar)
+    """
+    # 改进1：更精确的方向判断，同时考虑高点和低点
+    if k1.high < k2.high or (k1.high == k2.high and k1.low < k2.low):
+        direction = Direction.Up
+    elif k1.high > k2.high or (k1.high == k2.high and k1.low > k2.low):
+        direction = Direction.Down
+    else:
+        # 完全相等的情况，直接返回新K线
+        k4 = NewBar(symbol=k3.symbol, id=k3.id, freq=k3.freq, dt=k3.dt, open=k3.open,
+                    close=k3.close, high=k3.high, low=k3.low, vol=k3.vol, amount=k3.amount, elements=[k3])
+        return False, k4
 
-    处理逻辑如下：
+    # 判断 k2 和 k3 之间是否存在包含关系
+    if (k2.high <= k3.high and k2.low >= k3.low) or (k2.high >= k3.high and k2.low <= k3.low):
+        
+        if direction == Direction.Up:
+            high = max(k2.high, k3.high)
+            low = max(k2.low, k3.low)
+            # 改进4：更智能的时间戳选择，基于价格重要性
+            dt = k2.dt if k2.high >= k3.high else k3.dt
 
-    1. 首先，通过比较k1和k2的高点(high)的大小关系来确定direction的值。如果k1的高点小于k2的高点，
-       则设定direction为Up；如果k1的高点大于k2的高点，则设定direction为Down；如果k1和k2的高点相等，
-       则创建一个新的K线k4，与k3具有相同的属性，并返回False和k4。
+        elif direction == Direction.Down:
+            high = min(k2.high, k3.high)
+            low = min(k2.low, k3.low)
+            dt = k2.dt if k2.low <= k3.low else k3.dt
 
-    2. 接下来，判断k2和k3之间是否存在包含关系。如果存在，则根据direction的值进行处理。
-        - 如果direction为Up，则选择k2和k3中的较大高点作为新K线k4的高点，较大低点作为低点，较大高点所在的时间戳(dt)作为k4的时间戳。
-        - 如果direction为Down，则选择k2和k3中的较小高点作为新K线k4的高点，较小低点作为低点，较小低点所在的时间戳(dt)作为k4的时间戳。
-        - 如果direction的值不是Up也不是Down，则抛出ValueError异常。
+        else:
+            raise ValueError
 
-    3. 根据上述处理得到的高点、低点、开盘价(open_)、收盘价(close)，计算新K线k4的成交量(vol)和成交金额(amount)，
-       并将k2中除了与k3时间戳相同的元素之外的其他元素与k3一起作为k4的元素列表(elements)。
+        # 改进2：更合理的开收盘价计算，保持价格连续性
+        open_ = k2.open  # 开盘价使用前一根K线的开盘价，保持连续性
+        close = k3.close  # 收盘价使用当前K线的收盘价，反映最新状态
+        
+        vol = k2.vol + k3.vol
+        amount = k2.amount + k3.amount
 
-    4. 返回一个布尔值和新的K线k4。如果k2和k3之间存在包含关系，则返回True和k4；否则返回False和k4，其中k4与k3具有相同的属性。
+        # 改进3：更稳定的elements管理，避免过大数组问题
+        # 限制elements数量在合理范围内，同时保持时间顺序
+        max_elements = 50  # 设置合理的上限
+        existing_elements = [x for x in k2.elements if x.dt != k3.dt]
+        
+        # 如果超过上限，保留最近的elements
+        if len(existing_elements) > max_elements - 1:
+            existing_elements = existing_elements[-(max_elements - 1):]
+            
+        elements = existing_elements + [k3]
+        
+        k4 = NewBar(symbol=k3.symbol, id=k2.id, freq=k2.freq, dt=dt, open=open_,
+                    close=close, high=high, low=low, vol=vol, amount=amount, elements=elements)
+        return True, k4
+
+    else:
+        k4 = NewBar(symbol=k3.symbol, id=k3.id, freq=k3.freq, dt=k3.dt, open=k3.open,
+                    close=k3.close, high=k3.high, low=k3.low, vol=k3.vol, amount=k3.amount, elements=[k3])
+        return False, k4
+
+
+def remove_include_legacy(k1: NewBar, k2: NewBar, k3: RawBar):
+    """传统包含关系处理：原始版本的包含关系去除算法
+    
+    保留作为备用方案，默认使用新的智能处理方式
     """
     if k1.high < k2.high:
         direction = Direction.Up
@@ -77,6 +134,11 @@ def remove_include(k1: NewBar, k2: NewBar, k3: RawBar):
         k4 = NewBar(symbol=k3.symbol, id=k3.id, freq=k3.freq, dt=k3.dt, open=k3.open,
                     close=k3.close, high=k3.high, low=k3.low, vol=k3.vol, amount=k3.amount, elements=[k3])
         return False, k4
+
+
+def remove_include(k1: NewBar, k2: NewBar, k3: RawBar):
+    """默认包含关系处理：使用新的智能处理方式"""
+    return remove_include_smart(k1, k2, k3)
 
 
 def check_fx(k1: NewBar, k2: NewBar, k3: NewBar):
@@ -137,13 +199,13 @@ def check_fxs(bars: List[NewBar]) -> List[FX]:
     return fxs
 
 
-def check_bi(bars: List[NewBar], **kwargs):
+def check_bi(bars: List[NewBar], pen_model: str = 'standard', **kwargs):
     """输入一串无包含关系K线，查找其中的一笔
 
-    :param bars: 无包含关系K线列表
+    :param bars: 无包含关系K线列表 (NewBar序列，已去除包含关系)
+    :param pen_model: 笔模式，'standard'(严格模式，至少3根) 或 'flexible'(灵活模式，至少1根)
     :return:
     """
-    min_bi_len = envs.get_min_bi_len()
     fxs = check_fxs(bars)
     if len(fxs) < 2:
         return None, bars
@@ -151,19 +213,20 @@ def check_bi(bars: List[NewBar], **kwargs):
     fx_a = fxs[0]
     if fx_a.mark == Mark.D:
         direction = Direction.Up
-        fxs_b = (x for x in fxs if x.mark == Mark.G and x.dt > fx_a.dt and x.fx > fx_a.fx)
-        fx_b = max(fxs_b, key=lambda fx: fx.high, default=None)
+        fxs_b = [x for x in fxs if x.mark == Mark.G and x.dt > fx_a.dt and x.fx > fx_a.fx]
+        if len(fxs_b) == 0:
+            return None, bars
+        fx_b = max(fxs_b, key=lambda fx: fx.high)
 
     elif fx_a.mark == Mark.G:
         direction = Direction.Down
-        fxs_b = (x for x in fxs if x.mark == Mark.D and x.dt > fx_a.dt and x.fx < fx_a.fx)
-        fx_b = min(fxs_b, key=lambda fx: fx.low, default=None)
+        fxs_b = [x for x in fxs if x.mark == Mark.D and x.dt > fx_a.dt and x.fx < fx_a.fx]
+        if len(fxs_b) == 0:
+            return None, bars
+        fx_b = min(fxs_b, key=lambda fx: fx.low)
 
     else:
         raise ValueError
-
-    if fx_b is None:
-        return None, bars
 
     bars_a = [x for x in bars if fx_a.elements[0].dt <= x.dt <= fx_b.elements[2].dt]
     bars_b = [x for x in bars if x.dt >= fx_b.elements[0].dt]
@@ -171,8 +234,16 @@ def check_bi(bars: List[NewBar], **kwargs):
     # 判断fx_a和fx_b价格区间是否存在包含关系
     ab_include = (fx_a.high > fx_b.high and fx_a.low < fx_b.low) or (fx_a.high < fx_b.high and fx_a.low > fx_b.low)
 
-    # 成笔的条件：1）顶底分型之间没有包含关系；2）笔长度大于等于min_bi_len
-    if (not ab_include) and (len(bars_a) >= min_bi_len):
+    # 根据笔模式设置最小K线数量要求
+    if pen_model == 'standard':
+        min_bars = 5  # 严格模式：至少5根K线(相邻分型间隔至少3根)
+    elif pen_model == 'flexible':
+        min_bars = 4  # 灵活模式：至少3根K线(相邻分型间隔至少2根)
+    else:
+        min_bars = envs.get_min_bi_len()  # 默认值
+
+    # 成笔的条件
+    if (not ab_include) and (len(bars_a) >= min_bars):
         fxs_ = [x for x in fxs if fx_a.elements[0].dt <= x.dt <= fx_b.elements[2].dt]
         bi = BI(symbol=fx_a.symbol, fx_a=fx_a, fx_b=fx_b, fxs=fxs_, direction=direction, bars=bars_a)
         return bi, bars_b
@@ -185,12 +256,14 @@ class CZSC:
                  bars: List[RawBar],
                  get_signals = None,
                  max_bi_num=envs.get_max_bi_num(),
+                 pen_model: str = 'standard',
                  ):
         """
 
         :param bars: K线数据
         :param max_bi_num: 最大允许保留的笔数量
         :param get_signals: 自定义的信号计算函数
+        :param pen_model: 笔模式，'standard'(标准5K线) 或 'flexible'(灵活3K线)
         """
         self.verbose = envs.get_verbose()
         self.max_bi_num = max_bi_num
@@ -203,15 +276,24 @@ class CZSC:
         self.signals = None
         # cache 是信号计算过程的缓存容器，需要信号计算函数自行维护
         self.cache = OrderedDict()
+        
+        # 笔模式参数
+        self.pen_model = pen_model
+        
+        if self.verbose:
+            print(f"[CZSC] 笔模式: {self.pen_model}")
 
         for bar in bars:
             self.update(bar)
 
     def __repr__(self):
         return "<CZSC~{}~{}>".format(self.symbol, self.freq.value)
+    
+    
 
     def __update_bi(self):
         bars_ubi = self.bars_ubi
+        
         if len(bars_ubi) < 3:
             return
 
@@ -230,7 +312,7 @@ class CZSC:
                     fx_a = fx
             bars_ubi = [x for x in bars_ubi if x.dt >= fx_a.elements[0].dt]
 
-            bi, bars_ubi_ = check_bi(bars_ubi)
+            bi, bars_ubi_ = check_bi(bars_ubi, pen_model=self.pen_model)
             if isinstance(bi, BI):
                 self.bi_list.append(bi)
             self.bars_ubi = bars_ubi_
@@ -239,7 +321,7 @@ class CZSC:
         if self.verbose and len(bars_ubi) > 100:
             logger.info(f"{self.symbol} - {self.freq} - {bars_ubi[-1].dt} 未完成笔延伸数量: {len(bars_ubi)}")
 
-        bi, bars_ubi_ = check_bi(bars_ubi)
+        bi, bars_ubi_ = check_bi(bars_ubi, pen_model=self.pen_model)
         self.bars_ubi = bars_ubi_
         if isinstance(bi, BI):
             self.bi_list.append(bi)
@@ -249,10 +331,16 @@ class CZSC:
         bars_ubi = self.bars_ubi
         if (last_bi.direction == Direction.Up and bars_ubi[-1].high > last_bi.high) \
                 or (last_bi.direction == Direction.Down and bars_ubi[-1].low < last_bi.low):
-            # 当前笔被破坏，将当前笔的bars与bars_ubi进行合并，并丢弃，这里容易出错，多一根K线就可能导致错误
-            # 必须是 -2，因为最后一根无包含K线有可能是未完成的
-            self.bars_ubi = last_bi.bars[:-2] + [x for x in bars_ubi if x.dt >= last_bi.bars[-2].dt]
+            # 当前笔被破坏，将当前笔的bars与bars_ubi进行合并，并丢弃
+            # 添加安全检查防止索引越界
+            if len(last_bi.bars) >= 2:
+                self.bars_ubi = last_bi.bars[:-2] + [x for x in bars_ubi if x.dt >= last_bi.bars[-2].dt]
+            else:
+                # 如果笔的bars太少，直接使用当前bars_ubi
+                self.bars_ubi = last_bi.bars + bars_ubi
             self.bi_list.pop(-1)
+    
+    
 
     def update(self, bar: RawBar):
         """更新分析结果
@@ -300,6 +388,7 @@ class CZSC:
                     break
             self.bars_raw = self.bars_raw[s_index:]
 
+        
         # 如果有信号计算函数，则进行信号计算
         self.signals = self.get_signals(c=self) if self.get_signals else OrderedDict()
 

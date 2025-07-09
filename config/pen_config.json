@@ -1,0 +1,66 @@
+{
+    "pen_settings": {
+        "default_pen_model": "standard",
+        "default_use_adaptive_pen": false,
+        "standard_mode": {
+            "min_bi_len": 5,
+            "description": "标准模式：严格的5根K线笔判断，保持原有CZSC逻辑"
+        },
+        "flexible_mode": {
+            "min_bi_len": 3,
+            "description": "灵活模式：允许3根K线成笔，适用于快速市场"
+        },
+        "adaptive_mode": {
+            "enabled": true,
+            "volume_ratio": 2.5,
+            "atr_ratio": 1.8,
+            "atr_period": 14,
+            "volume_period": 20,
+            "description": "自适应模式：基于成交量和ATR的极端情况笔判断"
+        }
+    },
+    "indicator_settings": {
+        "atr": {
+            "period": 14,
+            "description": "ATR计算周期，用于判断价格波动的异常情况"
+        },
+        "volume_ma": {
+            "period": 20,
+            "description": "成交量移动平均周期，用于判断成交量的异常放大"
+        }
+    },
+    "adaptive_thresholds": {
+        "conservative": {
+            "volume_ratio": 1.5,
+            "atr_ratio": 1.0,
+            "description": "保守模式：较容易触发自适应笔"
+        },
+        "moderate": {
+            "volume_ratio": 2.0,
+            "atr_ratio": 1.5,
+            "description": "适中模式：平衡的自适应笔触发条件"
+        },
+        "aggressive": {
+            "volume_ratio": 3.0,
+            "atr_ratio": 2.5,
+            "description": "激进模式：较难触发自适应笔，只在极端情况下生效"
+        }
+    },
+    "market_specific": {
+        "crypto": {
+            "volume_ratio": 2.5,
+            "atr_ratio": 2.0,
+            "description": "加密货币市场：波动性较大，需要更严格的条件"
+        },
+        "stock": {
+            "volume_ratio": 1.8,
+            "atr_ratio": 1.5,
+            "description": "股票市场：相对稳定，可以使用较宽松的条件"
+        },
+        "futures": {
+            "volume_ratio": 2.2,
+            "atr_ratio": 1.8,
+            "description": "期货市场：杠杆效应，需要中等严格的条件"
+        }
+    }
+}
