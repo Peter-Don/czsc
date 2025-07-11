@@ -5,6 +5,29 @@ email: zeng_bin8888@163.com
 create_dt: 2021/11/21 17:48
 describe: 信号函数
 """
+
+# 新信号系统
+from czsc.signals.base import (
+    ComponentSignal,
+    CompositeSignal,
+    ComponentSignalStrength,
+    SignalDirection,
+    CompositeSignalStrength,
+    SignalNecessity,
+    SignalWeight,
+    CompositeSignalRule,
+    ComponentSignalGenerator
+)
+
+from czsc.signals.adapters import ComponentAdapter
+from czsc.signals.fractal_signals import FractalComponentSignalGenerator
+from czsc.signals.institutional_signals import FVGSignalGenerator, OBSignalGenerator
+from czsc.signals.composite import SignalScoringEngine
+from czsc.signals.manager import SignalManager
+from czsc.signals.enhanced_manager import EnhancedSignalManager
+from czsc.signals.advanced_rules import ADVANCED_SIGNAL_RULES, get_rule_by_name
+
+# 原有信号函数保持不变
 from czsc.signals.cxt import (
     cxt_fx_power_V221107,
     cxt_first_buy_V221126,

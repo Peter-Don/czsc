@@ -17,6 +17,7 @@ from deprecated import deprecated
 from typing import List, Callable, Dict
 from czsc.enum import Mark, Direction, Freq, Operate
 from czsc.utils.corr import single_linear
+from typing import List, Callable, Dict, Optional, Any
 
 
 @deprecated(version="1.0.0", reason="请使用 RawBar")
@@ -62,7 +63,11 @@ class RawBar:
 
 @dataclass
 class NewBar:
-    """去除包含关系后的K线元素"""
+    """去除包含关系后的K线元素
+    
+    注意：包含处理后的成交量和成交额遵循分型处理模式，
+    即为构成包含关系的所有原始K线的成交量/成交额之和
+    """
 
     symbol: str
     id: int  # id 必须是升序
@@ -80,6 +85,71 @@ class NewBar:
     @property
     def raw_bars(self):
         return self.elements
+    
+    @property
+    def inclusion_open(self):
+        """包含处理后的开盘价：前一根K线的收盘价"""
+        # 需要从外部传入previous_bar或在包含处理时设置
+        return self.cache.get('inclusion_open', self.open)
+    
+    @property
+    def inclusion_close(self):
+        """包含处理后的收盘价：后一根K线的收盘价"""
+        # 需要从外部传入next_bar或在包含处理时设置
+        return self.cache.get('inclusion_close', self.close)
+    
+    @property
+    def inclusion_high(self):
+        """包含处理后的最高价：保持原有最高价"""
+        return self.high
+    
+    @property
+    def inclusion_low(self):
+        """包含处理后的最低价：保持原有最低价"""
+        return self.low
+    
+    @property
+    def inclusion_vol(self):
+        """包含处理后的成交量：包含关系K线的成交量之和"""
+        if self.elements:
+            # 参照分型处理：返回构成包含关系的所有原始K线成交量之和
+            return sum([bar.vol for bar in self.elements])
+        else:
+            # 如果没有elements，返回自身成交量
+            return self.vol
+    
+    @property
+    def inclusion_amount(self):
+        """包含处理后的成交额：包含关系K线的成交额之和"""
+        if self.elements:
+            # 参照分型处理：返回构成包含关系的所有原始K线成交额之和
+            return sum([bar.amount for bar in self.elements])
+        else:
+            # 如果没有elements，返回自身成交额
+            return self.amount
+    
+    def set_inclusion_prices(self, previous_close: float, next_close: float):
+        """设置包含处理后的OCHLV价格
+        
+        Args:
+            previous_close: 前一根K线的收盘价（作为开盘价）
+            next_close: 后一根K线的收盘价（作为收盘价）
+        """
+        self.cache['inclusion_open'] = previous_close
+        self.cache['inclusion_close'] = next_close
+    
+    def get_inclusion_ohlcv(self) -> dict:
+        """获取包含处理后的完整OHLCV数据"""
+        return {
+            'open': self.inclusion_open,
+            'high': self.inclusion_high,
+            'low': self.inclusion_low,
+            'close': self.inclusion_close,
+            'vol': self.inclusion_vol,
+            'amount': self.inclusion_amount,
+            'dt': self.dt,
+            'symbol': self.symbol
+        }
 
 
 @dataclass
@@ -92,6 +162,13 @@ class FX:
     fx: float
     elements: List = field(default_factory=list)
     cache: dict = field(default_factory=dict)  # cache 用户缓存
+    
+    # 分级分型增强属性
+    gfc_level: int = 1  # 分型分级：1-一级分型，2-二级分型，3-三级分型等
+    level_2_reasons: List[str] = field(default_factory=list)  # 二级分型原因列表
+    level_3_reasons: List[str] = field(default_factory=list)  # 三级分型原因列表
+    parent_fx: 'FX' = None  # 父级分型（更高级别的分型）
+    child_fxs: List['FX'] = field(default_factory=list)  # 子分型列表（更低级别的分型）
 
     @property
     def new_bars(self):
@@ -133,6 +210,30 @@ class FX:
         """成交量力度"""
         assert len(self.elements) == 3
         return sum([x.vol for x in self.elements])
+    
+    @property
+    def open(self):
+        """开盘价：分型中第一根K线的收盘价"""
+        assert len(self.elements) == 3
+        return self.elements[0].close
+    
+    @property
+    def close(self):
+        """收盘价：分型中最后一根K线的收盘价"""
+        assert len(self.elements) == 3
+        return self.elements[-1].close
+    
+    @property
+    def vol(self):
+        """成交量：分型中3根K线的成交量之和"""
+        assert len(self.elements) == 3
+        return sum([x.vol for x in self.elements])
+    
+    @property
+    def amount(self):
+        """成交额：分型中3根K线的成交额之和"""
+        assert len(self.elements) == 3
+        return sum([x.amount for x in self.elements])
 
     @property
     def has_zs(self):
@@ -141,6 +242,32 @@ class FX:
         zd = max([x.low for x in self.elements])
         zg = min([x.high for x in self.elements])
         return zg >= zd
+    
+    @property
+    def is_level_2(self):
+        """是否为二级分型"""
+        return self.gfc_level >= 2
+    
+    @property
+    def is_level_3(self):
+        """是否为三级分型"""
+        return self.gfc_level >= 3
+    
+    @property
+    def level_description(self):
+        """分型级别描述"""
+        level_names = {1: "一级分型", 2: "二级分型", 3: "三级分型", 4: "四级分型", 5: "五级分型"}
+        return level_names.get(self.gfc_level, f"{self.gfc_level}级分型")
+    
+    @property
+    def enhancement_summary(self):
+        """分型增强信息摘要"""
+        summary = f"{self.level_description}({self.mark.value})"
+        if self.level_2_reasons:
+            summary += f" 二级原因:{len(self.level_2_reasons)}个"
+        if self.level_3_reasons:
+            summary += f" 三级原因:{len(self.level_3_reasons)}个"
+        return summary
 
 
 @dataclass
@@ -206,6 +333,13 @@ class BI:
     direction: Direction
     bars: List[NewBar] = field(default_factory=list)
     cache: dict = field(default_factory=dict)  # cache 用户缓存
+    
+    # 分级分型增强属性
+    gbc_level: int = 1  # 笔分级：1-一级笔，2-二级笔，3-三级笔等
+    level_2_reasons: List[str] = field(default_factory=list)  # 二级笔原因列表
+    level_3_reasons: List[str] = field(default_factory=list)  # 三级笔原因列表
+    parent_bi: 'BI' = None  # 父级笔（更高级别的笔）
+    child_bis: List['BI'] = field(default_factory=list)  # 子笔列表（更低级别的笔）
 
     def __post_init__(self):
         self.sdt = self.fx_a.dt
@@ -363,6 +497,50 @@ class BI:
     def angle(self):
         """笔的斜边与竖直方向的夹角，角度越大，力度越大"""
         return round(math.asin(self.power_price / self.hypotenuse) * 180 / 3.14, 2)
+    
+    @property
+    def is_level_2(self):
+        """是否为二级笔"""
+        return self.gbc_level >= 2
+    
+    @property
+    def is_level_3(self):
+        """是否为三级笔"""
+        return self.gbc_level >= 3
+    
+    @property
+    def level_description(self):
+        """笔级别描述"""
+        level_names = {1: "一级笔", 2: "二级笔", 3: "三级笔", 4: "四级笔", 5: "五级笔"}
+        return level_names.get(self.gbc_level, f"{self.gbc_level}级笔")
+    
+    @property
+    def enhancement_summary(self):
+        """笔增强信息摘要"""
+        summary = f"{self.level_description}({self.direction.value})"
+        if self.level_2_reasons:
+            summary += f" 二级原因:{len(self.level_2_reasons)}个"
+        if self.level_3_reasons:
+            summary += f" 三级原因:{len(self.level_3_reasons)}个"
+        return summary
+    
+    @property
+    def start_fx_level(self):
+        """起始分型的级别"""
+        return self.fx_a.gfc_level
+    
+    @property
+    def end_fx_level(self):
+        """结束分型的级别"""
+        return self.fx_b.gfc_level
+    
+    @property
+    def max_fx_level(self):
+        """笔内最高分型级别"""
+        levels = [self.fx_a.gfc_level, self.fx_b.gfc_level]
+        if self.fxs:
+            levels.extend([fx.gfc_level for fx in self.fxs])
+        return max(levels)
 
 
 @dataclass

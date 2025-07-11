@@ -199,6 +199,140 @@ def check_fxs(bars: List[NewBar]) -> List[FX]:
     return fxs
 
 
+def enhance_fx_level(fx: FX, bi_list: List[BI], all_fxs: List[FX]) -> None:
+    """增强分型级别
+    
+    基于缠论分型增强理论，对分型进行级别判断和增强：
+    1. 分型的基本级别为1级
+    2. 二级分型条件：分型被后续一笔破坏，且该笔力度较强
+    3. 三级分型条件：分型被后续两笔破坏，且两笔都有较强力度
+    
+    :param fx: 待增强的分型
+    :param bi_list: 笔列表
+    :param all_fxs: 所有分型列表
+    """
+    if not bi_list:
+        return
+        
+    # 找到与此分型相关的笔
+    related_bis = []
+    for bi in bi_list:
+        if bi.fx_a.dt == fx.dt or bi.fx_b.dt == fx.dt:
+            related_bis.append(bi)
+        elif any(f.dt == fx.dt for f in bi.fxs):
+            related_bis.append(bi)
+    
+    # 分析分型后的价格行为
+    later_fxs = [f for f in all_fxs if f.dt > fx.dt]
+    
+    # 二级分型判断
+    level_2_reasons = []
+    if related_bis:
+        for bi in related_bis:
+            # 检查笔的力度
+            if bi.power_price > 0:
+                # 根据分型类型判断是否被破坏
+                if fx.mark == Mark.G:  # 顶分型
+                    if bi.direction == Direction.Down and bi.fx_b.fx < fx.fx:
+                        level_2_reasons.append(f"被{bi.direction.value}笔破坏,力度{bi.power_price:.2f}")
+                elif fx.mark == Mark.D:  # 底分型
+                    if bi.direction == Direction.Up and bi.fx_b.fx > fx.fx:
+                        level_2_reasons.append(f"被{bi.direction.value}笔破坏,力度{bi.power_price:.2f}")
+    
+    # 三级分型判断
+    level_3_reasons = []
+    if len(related_bis) >= 2:
+        strong_bis = [bi for bi in related_bis if bi.power_price > 0]
+        if len(strong_bis) >= 2:
+            level_3_reasons.append(f"被{len(strong_bis)}笔连续破坏")
+    
+    # 基于后续分型的反弹/回调判断
+    if later_fxs:
+        opposite_fxs = [f for f in later_fxs[:5] if f.mark != fx.mark]  # 取前5个相反分型
+        if opposite_fxs:
+            first_opposite = opposite_fxs[0]
+            if fx.mark == Mark.G:  # 顶分型
+                if first_opposite.fx < fx.fx * 0.95:  # 跌幅超过5%
+                    level_2_reasons.append(f"后续{first_opposite.mark.value}分型大幅破坏")
+            elif fx.mark == Mark.D:  # 底分型
+                if first_opposite.fx > fx.fx * 1.05:  # 涨幅超过5%
+                    level_2_reasons.append(f"后续{first_opposite.mark.value}分型大幅破坏")
+    
+    # 更新分型级别
+    fx.level_2_reasons = level_2_reasons
+    fx.level_3_reasons = level_3_reasons
+    
+    if level_3_reasons:
+        fx.gfc_level = 3
+    elif level_2_reasons:
+        fx.gfc_level = 2
+    else:
+        fx.gfc_level = 1
+
+
+def enhance_bi_level(bi: BI, all_bis: List[BI]) -> None:
+    """增强笔级别
+    
+    基于缠论笔增强理论，对笔进行级别判断和增强：
+    1. 笔的基本级别为1级
+    2. 二级笔条件：笔的起始或结束分型为二级分型
+    3. 三级笔条件：笔的起始或结束分型为三级分型，或笔本身具有特殊结构
+    
+    :param bi: 待增强的笔
+    :param all_bis: 所有笔列表
+    """
+    level_2_reasons = []
+    level_3_reasons = []
+    
+    # 基于分型级别判断笔级别
+    if bi.fx_a.gfc_level >= 2:
+        level_2_reasons.append(f"起始分型为{bi.fx_a.level_description}")
+    if bi.fx_b.gfc_level >= 2:
+        level_2_reasons.append(f"结束分型为{bi.fx_b.level_description}")
+    
+    if bi.fx_a.gfc_level >= 3:
+        level_3_reasons.append(f"起始分型为{bi.fx_a.level_description}")
+    if bi.fx_b.gfc_level >= 3:
+        level_3_reasons.append(f"结束分型为{bi.fx_b.level_description}")
+    
+    # 基于笔的力度判断
+    if bi.power_price > 0:
+        # 找到相邻的笔
+        bi_index = all_bis.index(bi) if bi in all_bis else -1
+        if bi_index > 0:
+            prev_bi = all_bis[bi_index - 1]
+            if prev_bi.power_price > 0:
+                power_ratio = bi.power_price / prev_bi.power_price
+                if power_ratio > 1.5:  # 力度比前一笔大50%以上
+                    level_2_reasons.append(f"力度比前笔强{power_ratio:.2f}倍")
+                elif power_ratio > 2.0:  # 力度比前一笔大100%以上
+                    level_3_reasons.append(f"力度比前笔强{power_ratio:.2f}倍")
+    
+    # 基于笔的内部结构判断
+    if len(bi.fxs) > 3:  # 内部分型较多
+        high_level_fxs = [fx for fx in bi.fxs if fx.gfc_level >= 2]
+        if high_level_fxs:
+            level_2_reasons.append(f"内部有{len(high_level_fxs)}个高级分型")
+    
+    # 基于SNR判断
+    if hasattr(bi, 'SNR') and bi.SNR > 0:
+        if bi.SNR > 0.8:  # 信噪比较高
+            level_2_reasons.append(f"信噪比高{bi.SNR:.3f}")
+        elif bi.SNR > 0.9:
+            level_3_reasons.append(f"信噪比极高{bi.SNR:.3f}")
+    
+    # 更新笔级别
+    bi.level_2_reasons = level_2_reasons
+    bi.level_3_reasons = level_3_reasons
+    
+    if level_3_reasons:
+        bi.gbc_level = 3
+    elif level_2_reasons:
+        bi.gbc_level = 2
+    else:
+        bi.gbc_level = 1
+
+
 def check_bi(bars: List[NewBar], pen_model: str = 'standard', **kwargs):
     """输入一串无包含关系K线，查找其中的一笔
 
@@ -280,6 +414,29 @@ class CZSC:
         # 笔模式参数
         self.pen_model = pen_model
         
+        # 分级分型增强功能开关
+        self.enable_level_enhancement = True  # 是否启用分级分型增强
+        self.enhancement_update_interval = 10  # 每10根K线更新一次分级分型
+        self.enhancement_counter = 0  # 增强计数器
+        
+        # FVG检测器
+        from czsc.poi.fvg import FVGDetector
+        self.fvg_detector = FVGDetector()
+        
+        # OB检测器 - 使用更适合加密货币的宽松参数
+        from czsc.poi.ob import OBDetector
+        self.ob_detector = OBDetector({
+            'min_breakout_ratio': 0.8,      # 降低突破比例要求
+            'min_volume_ratio': 0.8,        # 降低成交量要求
+            'min_ob_bars': 3,               # 最少K线数
+            'max_ob_bars': 20,              # 增加最大K线数
+            'test_threshold': 0.5           # 测试阈值
+        })
+        
+        # 组件保存路径
+        self.save_components = True  # 是否保存组件信息
+        self.components_file = None  # 组件保存文件路径
+        
         if self.verbose:
             print(f"[CZSC] 笔模式: {self.pen_model}")
 
@@ -288,6 +445,34 @@ class CZSC:
 
     def __repr__(self):
         return "<CZSC~{}~{}>".format(self.symbol, self.freq.value)
+    
+    def __update_level_enhancement(self):
+        """更新分级分型增强"""
+        if not self.enable_level_enhancement:
+            return
+            
+        # 获取所有分型列表
+        all_fxs = self.fx_list
+        if not all_fxs:
+            return
+            
+        # 对所有分型进行级别增强
+        for fx in all_fxs:
+            enhance_fx_level(fx, self.bi_list, all_fxs)
+        
+        # 对所有笔进行级别增强
+        for bi in self.bi_list:
+            enhance_bi_level(bi, self.bi_list)
+        
+        if self.verbose:
+            level_2_fxs = [fx for fx in all_fxs if fx.gfc_level >= 2]
+            level_3_fxs = [fx for fx in all_fxs if fx.gfc_level >= 3]
+            level_2_bis = [bi for bi in self.bi_list if bi.gbc_level >= 2]
+            level_3_bis = [bi for bi in self.bi_list if bi.gbc_level >= 3]
+            
+            if level_2_fxs or level_3_fxs or level_2_bis or level_3_bis:
+                print(f"[CZSC] 分级分型增强 - 二级分型:{len(level_2_fxs)}个, 三级分型:{len(level_3_fxs)}个")
+                print(f"[CZSC] 分级分型增强 - 二级笔:{len(level_2_bis)}个, 三级笔:{len(level_3_bis)}个")
     
     
 
@@ -387,10 +572,164 @@ class CZSC:
                     s_index = i
                     break
             self.bars_raw = self.bars_raw[s_index:]
+        
+        # 更新FVG检测器 - 基于分型检测FVG
+        if len(self.fx_list) >= 3:
+            # 将原始K线转换为NewBar格式用于FVG检测
+            newbars = []
+            for bar in self.bars_raw:
+                newbar = NewBar(
+                    symbol=bar.symbol,
+                    id=bar.id,
+                    dt=bar.dt,
+                    freq=bar.freq,
+                    open=bar.open,
+                    close=bar.close,
+                    high=bar.high,
+                    low=bar.low,
+                    vol=bar.vol,
+                    amount=bar.amount,
+                    elements=[bar]
+                )
+                newbars.append(newbar)
+            
+            # 使用分型和原始K线进行FVG检测
+            self.fvg_detector.update_fvgs(newbars, self.fx_list)
+            
+            # 使用原始K线进行OB检测
+            self.ob_detector.update_obs(newbars)
 
+        
+        # 分级分型增强逻辑
+        if self.enable_level_enhancement:
+            self.enhancement_counter += 1
+            # 每隔一定数量的K线更新一次分级分型，以提高效率
+            if self.enhancement_counter >= self.enhancement_update_interval:
+                self.__update_level_enhancement()
+                self.enhancement_counter = 0
         
         # 如果有信号计算函数，则进行信号计算
         self.signals = self.get_signals(c=self) if self.get_signals else OrderedDict()
+    
+    def save_components_to_csv(self, file_path: str = None):
+        """保存组件信息到CSV文件"""
+        import pandas as pd
+        import os
+        
+        if file_path is None:
+            file_path = f"{self.symbol}_{self.freq.value}_components.csv"
+        
+        # 准备数据
+        components_data = []
+        
+        # 保存分型信息
+        for fx in self.fx_list:
+            components_data.append({
+                'type': 'FX',
+                'symbol': self.symbol,
+                'freq': self.freq.value,
+                'dt': fx.dt,
+                'mark': fx.mark.value,
+                'price': fx.fx,
+                'high': fx.high,
+                'low': fx.low,
+                'direction': str(fx.mark),
+                'bar_count': len(fx.elements),
+                'raw_data': str(fx.elements[0].dt) + '-' + str(fx.elements[-1].dt),
+                'level': fx.gfc_level,
+                'level_description': fx.level_description,
+                'level_2_reasons': ';'.join(fx.level_2_reasons),
+                'level_3_reasons': ';'.join(fx.level_3_reasons),
+                'enhancement_summary': fx.enhancement_summary
+            })
+        
+        # 保存笔信息
+        for bi in self.bi_list:
+            components_data.append({
+                'type': 'BI',
+                'symbol': self.symbol,
+                'freq': self.freq.value,
+                'dt': bi.fx_a.dt,
+                'mark': f"{bi.fx_a.mark.value}-{bi.fx_b.mark.value}",
+                'price': f"{bi.fx_a.fx}-{bi.fx_b.fx}",
+                'high': max(bi.fx_a.fx, bi.fx_b.fx),
+                'low': min(bi.fx_a.fx, bi.fx_b.fx),
+                'direction': str(bi.direction),
+                'bar_count': len(bi.fx_a.elements) + len(bi.fx_b.elements),
+                'raw_data': f"{bi.fx_a.dt}-{bi.fx_b.dt}",
+                'level': bi.gbc_level,
+                'level_description': bi.level_description,
+                'level_2_reasons': ';'.join(bi.level_2_reasons),
+                'level_3_reasons': ';'.join(bi.level_3_reasons),
+                'enhancement_summary': bi.enhancement_summary
+            })
+        
+        # 保存FVG信息
+        for fvg in self.fvg_detector.fvgs:
+            components_data.append({
+                'type': 'FVG',
+                'symbol': self.symbol,
+                'freq': self.freq.value,
+                'dt': fvg.dt,
+                'mark': 'Up' if fvg.is_bullish_fvg() else 'Down',
+                'price': f"{fvg.low}-{fvg.high}",
+                'high': fvg.high,
+                'low': fvg.low,
+                'direction': 'Up' if fvg.is_bullish_fvg() else 'Down',
+                'bar_count': 3,  # FVG由3根K线组成
+                'raw_data': f"size:{fvg.size:.2f},strength:{fvg.strength:.3f},valid:{fvg.is_valid},mitigated:{fvg.is_mitigated}"
+            })
+        
+        # 保存OB信息
+        for ob in self.ob_detector.obs:
+            components_data.append({
+                'type': 'OB',
+                'symbol': self.symbol,
+                'freq': self.freq.value,
+                'dt': ob.dt,
+                'mark': 'Up' if ob.is_bullish_ob() else 'Down',
+                'price': f"{ob.low}-{ob.high}",
+                'high': ob.high,
+                'low': ob.low,
+                'direction': 'Up' if ob.is_bullish_ob() else 'Down',
+                'bar_count': len(ob.ob_bars),
+                'raw_data': f"size:{ob.size:.2f},strength:{ob.strength:.3f},valid:{ob.is_valid},tested:{ob.is_tested},broken:{ob.is_broken}"
+            })
+        
+        # 创建DataFrame并保存
+        df = pd.DataFrame(components_data)
+        df = df.sort_values('dt')
+        
+        # 确保目录存在
+        os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
+        
+        df.to_csv(file_path, index=False, encoding='utf-8')
+        
+        if self.verbose:
+            print(f"[CZSC] 组件信息已保存到: {file_path}")
+            print(f"[CZSC] 保存了 {len(components_data)} 个组件")
+        
+        return file_path
+    
+    def load_components_from_csv(self, file_path: str):
+        """从CSV文件加载组件信息"""
+        import pandas as pd
+        
+        if not os.path.exists(file_path):
+            if self.verbose:
+                print(f"[CZSC] 组件文件不存在: {file_path}")
+            return None
+        
+        df = pd.read_csv(file_path)
+        
+        if self.verbose:
+            print(f"[CZSC] 从文件加载了 {len(df)} 个组件")
+            print(f"[CZSC] 分型: {len(df[df['type'] == 'FX'])} 个")
+            print(f"[CZSC] 笔: {len(df[df['type'] == 'BI'])} 个")
+            print(f"[CZSC] FVG: {len(df[df['type'] == 'FVG'])} 个")
+            print(f"[CZSC] OB: {len(df[df['type'] == 'OB'])} 个")
+        
+        return df
 
     def to_echarts(self, width: str = "1400px", height: str = '580px', bs=[]):
         """绘制K线分析图
@@ -408,7 +747,14 @@ class CZSC:
         else:
             bi = []
             fx = []
-        chart = kline_pro(kline, bi=bi, fx=fx, width=width, height=height, bs=bs,
+        
+        # 获取FVG数据
+        fvg = self.fvg_detector.to_echarts_data()
+        
+        # 获取OB数据
+        ob = self.ob_detector.to_echarts_data()
+        
+        chart = kline_pro(kline, bi=bi, fx=fx, fvg=fvg, ob=ob, width=width, height=height, bs=bs,
                           title="{}-{}".format(self.symbol, self.freq.value))
         return chart
 
@@ -516,3 +862,66 @@ class CZSC:
             if not fxs or x.dt > fxs[-1].dt:
                 fxs.append(x)
         return fxs
+    
+    # 分级分型增强查询方法
+    @property
+    def level_2_fxs(self) -> List[FX]:
+        """二级及以上分型列表"""
+        return [fx for fx in self.fx_list if fx.gfc_level >= 2]
+    
+    @property
+    def level_3_fxs(self) -> List[FX]:
+        """三级及以上分型列表"""
+        return [fx for fx in self.fx_list if fx.gfc_level >= 3]
+    
+    @property
+    def level_2_bis(self) -> List[BI]:
+        """二级及以上笔列表"""
+        return [bi for bi in self.bi_list if bi.gbc_level >= 2]
+    
+    @property
+    def level_3_bis(self) -> List[BI]:
+        """三级及以上笔列表"""
+        return [bi for bi in self.bi_list if bi.gbc_level >= 3]
+    
+    def get_fxs_by_level(self, level: int) -> List[FX]:
+        """根据级别获取分型列表"""
+        return [fx for fx in self.fx_list if fx.gfc_level == level]
+    
+    def get_bis_by_level(self, level: int) -> List[BI]:
+        """根据级别获取笔列表"""
+        return [bi for bi in self.bi_list if bi.gbc_level == level]
+    
+    def get_latest_high_level_fx(self, min_level: int = 2) -> FX:
+        """获取最新的高级分型"""
+        high_level_fxs = [fx for fx in self.fx_list if fx.gfc_level >= min_level]
+        return high_level_fxs[-1] if high_level_fxs else None
+    
+    def get_latest_high_level_bi(self, min_level: int = 2) -> BI:
+        """获取最新的高级笔"""
+        high_level_bis = [bi for bi in self.bi_list if bi.gbc_level >= min_level]
+        return high_level_bis[-1] if high_level_bis else None
+    
+    def get_level_statistics(self) -> dict:
+        """获取分级分型统计信息"""
+        all_fxs = self.fx_list
+        all_bis = self.bi_list
+        
+        fx_stats = {}
+        bi_stats = {}
+        
+        # 统计分型级别分布
+        for level in range(1, 6):
+            fx_count = len([fx for fx in all_fxs if fx.gfc_level == level])
+            bi_count = len([bi for bi in all_bis if bi.gbc_level == level])
+            fx_stats[f"level_{level}"] = fx_count
+            bi_stats[f"level_{level}"] = bi_count
+        
+        return {
+            "fx_statistics": fx_stats,
+            "bi_statistics": bi_stats,
+            "total_fxs": len(all_fxs),
+            "total_bis": len(all_bis),
+            "high_level_fxs": len([fx for fx in all_fxs if fx.gfc_level >= 2]),
+            "high_level_bis": len([bi for bi in all_bis if bi.gbc_level >= 2])
+        }

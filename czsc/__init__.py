@@ -19,6 +19,7 @@ from czsc import sensors
 from czsc import aphorism
 from czsc import svc
 from czsc import mock
+from czsc import poi
 from czsc.traders import rwc
 from czsc.traders import cwc
 from czsc.analyze import CZSC

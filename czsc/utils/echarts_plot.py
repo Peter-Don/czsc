@@ -22,6 +22,8 @@ def kline_pro(
     bi: List[dict] = [],
     xd: List[dict] = [],
     bs: List[dict] = [],
+    fvg: List[dict] = [],
+    ob: List[dict] = [],
     title: str = "缠中说禅K线分析",
     t_seq: List[int] = [],
     width: str = "1400px",
@@ -31,6 +33,8 @@ def kline_pro(
 
     :param kline: K线
     :param fx: 分型识别结果
+    :param fvg: FVG识别结果
+    :param ob: OB识别结果
     :param bi: 笔识别结果
         {'dt': Timestamp('2020-11-26 00:00:00'),
           'fx_mark': 'd',
@@ -296,26 +300,80 @@ def kline_pro(
     chart_ma.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
     chart_k = chart_k.overlap(chart_ma)
 
-    # 缠论结果
+    # 缠论结果 - 支持分级分型可视化
     # ------------------------------------------------------------------------------------------------------------------
     if fx:
-        fx_dts = [x["dt"] for x in fx]
-        fx_val = [round(x["fx"], 2) for x in fx]
-        chart_fx = Line()
-        chart_fx.add_xaxis(fx_dts)
-        chart_fx.add_yaxis(
-            series_name="FX",
-            y_axis=fx_val,
-            symbol="circle",
-            symbol_size=6,
-            label_opts=label_show_opts,
-            itemstyle_opts=opts.ItemStyleOpts(
-                color="rgba(152, 147, 193, 1.0)",
-            ),
-        )
+        # 检查是否有级别信息
+        has_level_info = any(isinstance(x, dict) and 'level' in x for x in fx)
+        
+        if has_level_info:
+            # 分级分型可视化 - 按级别分组显示
+            level_configs = {
+                1: {'color': 'rgba(140, 140, 140, 1.0)', 'size': 6, 'name': '一级分型'},
+                2: {'color': 'rgba(24, 144, 255, 1.0)', 'size': 10, 'name': '二级分型'},
+                3: {'color': 'rgba(245, 34, 45, 1.0)', 'size': 14, 'name': '三级分型'},
+                4: {'color': 'rgba(250, 173, 20, 1.0)', 'size': 18, 'name': '四级分型'}
+            }
+            
+            # 按级别分组
+            fx_by_level = {}
+            for x in fx:
+                if isinstance(x, dict) and 'level' in x:
+                    level = x['level']
+                    if level not in fx_by_level:
+                        fx_by_level[level] = {'dts': [], 'vals': [], 'infos': []}
+                    fx_by_level[level]['dts'].append(x["dt"])
+                    fx_by_level[level]['vals'].append(round(x["fx"], 2))
+                    # 构建tooltip信息
+                    info = f"{x.get('mark', '')} - {x.get('level_desc', '')} @ {x['fx']:.2f}"
+                    if x.get('enhancement_summary'):
+                        info += f"<br/>{x['enhancement_summary']}"
+                    fx_by_level[level]['infos'].append(info)
+            
+            # 为每个级别创建单独的图层
+            for level, data in fx_by_level.items():
+                if data['dts']:  # 确保有数据
+                    config = level_configs.get(level, level_configs[4])  # 默认使用4级样式
+                    
+                    chart_fx = Scatter()
+                    chart_fx.add_xaxis(data['dts'])
+                    chart_fx.add_yaxis(
+                        series_name=config['name'],
+                        y_axis=[
+                            opts.ScatterItem(
+                                name=info,
+                                value=[dt, val],
+                                symbol_size=config['size']
+                            ) for dt, val, info in zip(data['dts'], data['vals'], data['infos'])
+                        ],
+                        symbol="circle",
+                        label_opts=label_not_show_opts,
+                        itemstyle_opts=opts.ItemStyleOpts(color=config['color']),
+                        tooltip_opts=opts.TooltipOpts(
+                            formatter="{b}: {c}<br/>{a}"
+                        )
+                    )
+                    chart_fx.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+                    chart_k = chart_k.overlap(chart_fx)
+        else:
+            # 原有的单一颜色分型显示
+            fx_dts = [x["dt"] for x in fx]
+            fx_val = [round(x["fx"], 2) for x in fx]
+            chart_fx = Line()
+            chart_fx.add_xaxis(fx_dts)
+            chart_fx.add_yaxis(
+                series_name="FX",
+                y_axis=fx_val,
+                symbol="circle",
+                symbol_size=6,
+                label_opts=label_show_opts,
+                itemstyle_opts=opts.ItemStyleOpts(
+                    color="rgba(152, 147, 193, 1.0)",
+                ),
+            )
 
-        chart_fx.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
-        chart_k = chart_k.overlap(chart_fx)
+            chart_fx.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_k = chart_k.overlap(chart_fx)
 
     if bi:
         bi_dts = [x["dt"] for x in bi]
@@ -354,6 +412,170 @@ def kline_pro(
 
         chart_xd.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
         chart_k = chart_k.overlap(chart_xd)
+
+    # FVG可视化
+    # ------------------------------------------------------------------------------------------------------------------
+    if fvg:
+        # 创建所有FVG的标记区域
+        all_fvg_areas = []
+        
+        for f in fvg:
+            # 找到对应的时间索引
+            start_idx = None
+            end_idx = None
+            
+            for i, dt in enumerate(dts):
+                if dt == f["start_dt"]:
+                    start_idx = i
+                if dt == f["end_dt"]:
+                    end_idx = i
+            
+            # 如果找不到精确匹配，使用最接近的时间
+            if start_idx is None:
+                start_idx = 0
+                for i, dt in enumerate(dts):
+                    if dt >= f["start_dt"]:
+                        start_idx = i
+                        break
+            
+            if end_idx is None:
+                end_idx = len(dts) - 1
+                for i, dt in enumerate(dts):
+                    if dt >= f["end_dt"]:
+                        end_idx = i
+                        break
+            
+            # 根据方向选择颜色
+            if f.get("direction") == "Up":
+                color = "rgba(0, 255, 0, 0.2)"
+                border_color = "rgba(0, 255, 0, 0.4)"
+                name = "看涨FVG"
+            else:
+                color = "rgba(255, 0, 0, 0.2)"
+                border_color = "rgba(255, 0, 0, 0.4)"
+                name = "看跌FVG"
+            
+            # 创建标记区域数据
+            mark_area_data = [
+                {
+                    "name": name,
+                    "coord": [start_idx, f["low"]],
+                    "itemStyle": {
+                        "color": color,
+                        "borderColor": border_color,
+                        "borderWidth": 1
+                    }
+                },
+                {
+                    "coord": [end_idx, f["high"]]
+                }
+            ]
+            
+            all_fvg_areas.append(mark_area_data)
+        
+        # 创建FVG可视化
+        if all_fvg_areas:
+            chart_fvg = Line()
+            chart_fvg.add_xaxis(dts)
+            chart_fvg.add_yaxis(
+                series_name="FVG",
+                y_axis=[None] * len(dts),
+                symbol_size=0,
+                label_opts=label_not_show_opts,
+                linestyle_opts=opts.LineStyleOpts(opacity=0),
+                markarea_opts=opts.MarkAreaOpts(
+                    data=all_fvg_areas,
+                    itemstyle_opts=opts.ItemStyleOpts(
+                        color="rgba(0, 255, 0, 0.15)",
+                        border_color="rgba(0, 255, 0, 0.3)",
+                        border_width=1
+                    )
+                )
+            )
+            chart_fvg.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_k = chart_k.overlap(chart_fvg)
+
+    # OB可视化
+    # ------------------------------------------------------------------------------------------------------------------
+    if ob:
+        # 创建所有OB的标记区域
+        all_ob_areas = []
+        
+        for o in ob:
+            # 找到对应的时间索引
+            start_idx = None
+            end_idx = None
+            
+            for i, dt in enumerate(dts):
+                if dt == o["start_dt"]:
+                    start_idx = i
+                if dt == o["end_dt"]:
+                    end_idx = i
+            
+            # 如果找不到精确匹配，使用最接近的时间
+            if start_idx is None:
+                start_idx = 0
+                for i, dt in enumerate(dts):
+                    if dt >= o["start_dt"]:
+                        start_idx = i
+                        break
+            
+            if end_idx is None:
+                end_idx = len(dts) - 1
+                for i, dt in enumerate(dts):
+                    if dt >= o["end_dt"]:
+                        end_idx = i
+                        break
+            
+            # 根据方向选择颜色（OB使用更深的颜色）
+            if o.get("direction") == "Up":
+                color = "rgba(0, 200, 0, 0.25)"
+                border_color = "rgba(0, 200, 0, 0.5)"
+                name = "看涨OB"
+            else:
+                color = "rgba(200, 0, 0, 0.25)"
+                border_color = "rgba(200, 0, 0, 0.5)"
+                name = "看跌OB"
+            
+            # 创建标记区域数据
+            mark_area_data = [
+                {
+                    "name": name,
+                    "coord": [start_idx, o["low"]],
+                    "itemStyle": {
+                        "color": color,
+                        "borderColor": border_color,
+                        "borderWidth": 2
+                    }
+                },
+                {
+                    "coord": [end_idx, o["high"]]
+                }
+            ]
+            
+            all_ob_areas.append(mark_area_data)
+        
+        # 创建OB可视化
+        if all_ob_areas:
+            chart_ob = Line()
+            chart_ob.add_xaxis(dts)
+            chart_ob.add_yaxis(
+                series_name="OB",
+                y_axis=[None] * len(dts),
+                symbol_size=0,
+                label_opts=label_not_show_opts,
+                linestyle_opts=opts.LineStyleOpts(opacity=0),
+                markarea_opts=opts.MarkAreaOpts(
+                    data=all_ob_areas,
+                    itemstyle_opts=opts.ItemStyleOpts(
+                        color="rgba(0, 200, 0, 0.2)",
+                        border_color="rgba(0, 200, 0, 0.4)",
+                        border_width=2
+                    )
+                )
+            )
+            chart_ob.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_k = chart_k.overlap(chart_ob)
 
     # 成交量图
     # ------------------------------------------------------------------------------------------------------------------
