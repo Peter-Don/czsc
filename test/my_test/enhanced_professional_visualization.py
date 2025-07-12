@@ -220,143 +220,53 @@ def enhance_fractal_levels(czsc):
 
 
 def create_professional_fvg_data(czsc):
-    """创建专业级FVG数据（基于原始K线）"""
+    """创建专业级FVG数据（使用POI模块）"""
     print("\n🔳 生成FVG数据")
     
-    fvg_data = []
-    # 使用原始K线数据而不是压缩后的数据
-    bars = czsc.bars_raw
+    # 使用POI模块的FVGDetector
+    from czsc.poi import FVGDetector
     
-    if len(bars) < 3:
-        return fvg_data
+    fvg_detector = FVGDetector({
+        'min_size_atr_factor': 0.1,  # 降低阈值以检测更多FVG
+        'atr_period': 14,
+        'auto_analysis': False  # 暂时关闭自动分析
+    })
     
-    # 只检测最近100根K线，避免过多数据
-    recent_bars = bars[-100:] if len(bars) > 100 else bars
+    # 使用处理后的K线进行检测（bars_ubi）
+    bars = czsc.bars_ubi if czsc.bars_ubi else czsc.bars_raw
+    identified_fvgs = fvg_detector.run_identification_stage(bars)
     
-    for i in range(2, len(recent_bars)):
-        bar1, bar2, bar3 = recent_bars[i-2], recent_bars[i-1], recent_bars[i]
-        
-        # 检测向上FVG（bar1的高点低于bar3的低点，中间有缺口）
-        if bar1.high < bar3.low:
-            gap_size = bar3.low - bar1.high
-            # 只保留有意义的缺口（大于价格的0.01%，降低阈值）
-            if gap_size > bar1.high * 0.0001:
-                fvg_data.append({
-                    'start_dt': bar1.dt,
-                    'end_dt': bar3.dt,
-                    'dt': bar2.dt,
-                    'high': bar3.low,
-                    'low': bar1.high,
-                    'direction': 'Up',
-                    'size': gap_size,
-                    'center': (bar3.low + bar1.high) / 2,
-                    'score': min(0.9, gap_size / bar1.high * 100),
-                    'mitigation_type': 'NONE'
-                })
-        
-        # 检测向下FVG（bar1的低点高于bar3的高点，中间有缺口）
-        elif bar1.low > bar3.high:
-            gap_size = bar1.low - bar3.high
-            # 只保留有意义的缺口（大于价格的0.01%，降低阈值）
-            if gap_size > bar3.high * 0.0001:
-                fvg_data.append({
-                    'start_dt': bar1.dt,
-                    'end_dt': bar3.dt,
-                    'dt': bar2.dt,
-                    'high': bar1.low,
-                    'low': bar3.high,
-                    'direction': 'Down',
-                    'size': gap_size,
-                    'center': (bar1.low + bar3.high) / 2,
-                    'score': min(0.9, gap_size / bar3.high * 100),
-                    'mitigation_type': 'NONE'
-                })
+    # 转换为ECharts格式
+    fvg_data = fvg_detector.to_echarts_data()
     
     print(f"   检测到 {len(fvg_data)} 个FVG")
     return fvg_data
 
 
 def create_professional_ob_data(czsc):
-    """创建专业级Order Block数据（基于分型和笔）"""
+    """创建专业级Order Block数据（使用POI模块）"""
     print("\n📦 生成Order Block数据")
     
-    ob_data = []
+    # 使用POI模块的OBDetector
+    from czsc.poi import OBDetector
     
-    # 基于高级别分型创建Order Block（2级和3级分型）
-    for i, fx in enumerate(czsc.fx_list):
-        fx_level = getattr(fx, 'gfc_level', 1)
-        
-        # 只为2级和3级分型创建Order Block
-        if fx_level >= 2:
-            # 根据分型类型确定OB类型和方向
-            if fx.mark == Mark.G:  # 高点分型 -> 供应区域
-                ob_type = "供应区域"
-                direction = "Down"
-            else:  # 低点分型 -> 需求区域
-                ob_type = "需求区域"
-                direction = "Up"
-            
-            # 计算OB的价格范围（基于分型的实际价格范围）
-            price_range = fx.high - fx.low
-            # 扩展价格范围以形成区块
-            expansion = price_range * 0.2 if price_range > 0 else fx.fx * 0.001
-            high = fx.high + expansion
-            low = fx.low - expansion
-            
-            # 创建时间范围（从分型前一段时间到分型后一段时间）
-            start_dt = fx.dt
-            end_dt = fx.dt  # 简化处理，使用相同时间
-            
-            ob_data.append({
-                'start_dt': start_dt,
-                'end_dt': end_dt,
-                'dt': fx.dt,
-                'high': high,
-                'low': low,
-                'type': ob_type,
-                'direction': direction,
-                'ob_type': "SUPPLY_ZONE" if fx.mark == Mark.G else "DEMAND_ZONE",
-                'poi_level': fx_level,
-                'strength_score': min(0.9, fx_level / 3.0),
-                'reliability_score': 0.7 + fx_level * 0.1,
-                'fvg_confirmed': fx_level >= 3  # 3级分型有FVG确认
-            })
+    ob_detector = OBDetector({
+        'min_breakout_ratio': 1.2,  # 降低突破比例阈值
+        'min_ob_bars': 2,           # 减少最小OB K线数
+        'max_ob_bars': 8,           # 减少最大OB K线数
+        'min_volume_ratio': 1.1,    # 降低成交量比例要求
+        'test_threshold': 0.7       # 测试阈值
+    })
     
-    # 基于笔的关键位置创建Order Block
-    for i, bi in enumerate(czsc.bi_list[-10:]):  # 只取最近10笔
-        if bi.length >= 7:  # 只为长度足够的笔创建OB
-            if bi.direction == Direction.Up:
-                # 上涨笔的高点附近创建供应区域
-                ob_data.append({
-                    'start_dt': bi.fx_a.dt,
-                    'end_dt': bi.fx_b.dt,
-                    'dt': bi.fx_b.dt,
-                    'high': bi.high * 1.002,  # 稍微扩展
-                    'low': bi.high * 0.998,
-                    'type': "供应区域",
-                    'direction': "Down",
-                    'ob_type': "SUPPLY_ZONE",
-                    'poi_level': 1,
-                    'strength_score': 0.6,
-                    'reliability_score': 0.7,
-                    'fvg_confirmed': False
-                })
-            else:
-                # 下跌笔的低点附近创建需求区域
-                ob_data.append({
-                    'start_dt': bi.fx_a.dt,
-                    'end_dt': bi.fx_b.dt,
-                    'dt': bi.fx_b.dt,
-                    'high': bi.low * 1.002,
-                    'low': bi.low * 0.998,  # 稍微扩展
-                    'type': "需求区域", 
-                    'direction': "Up",
-                    'ob_type': "DEMAND_ZONE",
-                    'poi_level': 1,
-                    'strength_score': 0.6,
-                    'reliability_score': 0.7,
-                    'fvg_confirmed': False
-                })
+    # 使用处理后的K线进行检测
+    bars = czsc.bars_ubi if czsc.bars_ubi else czsc.bars_raw
+    detected_obs = ob_detector.detect_obs_from_bars(bars)
+    
+    # 更新检测器状态
+    ob_detector.obs = detected_obs
+    
+    # 转换为ECharts格式
+    ob_data = ob_detector.to_echarts_data()
     
     print(f"   生成了 {len(ob_data)} 个Order Block")
     return ob_data
