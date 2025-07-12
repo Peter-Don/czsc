@@ -9,13 +9,22 @@ CZSC Enhanced 专业级可视化测试
 
 import sys
 import os
-# Ensure local project takes precedence over conda environment
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Ensure local project takes precedence over conda environment  
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 # Also remove any existing czsc from modules cache to force reload
 modules_to_remove = [mod for mod in sys.modules.keys() if mod.startswith('czsc')]
 for mod in modules_to_remove:
     del sys.modules[mod]
+    
+# Pre-import POI modules to ensure they're available
+try:
+    from czsc.poi import FVGDetector, OBDetector
+    print("✅ POI模块导入成功")
+except ImportError as e:
+    print(f"❌ POI模块导入失败: {e}")
+    print(f"项目根目录: {project_root}")
+    print(f"Python路径: {sys.path[:3]}")
 
 import pandas as pd
 import numpy as np
@@ -173,58 +182,65 @@ def enhance_fractal_levels(czsc):
     
     atr = np.mean(tr_values) if tr_values else 0
     
-    # 增强分型级别
+    # 增强分型级别（不修改原对象，而是创建属性映射）
+    fx_levels = {}
     for i, fx in enumerate(czsc.fx_list):
-        # 添加级别属性（如果不存在）
-        if not hasattr(fx, 'gfc_level'):
-            fx.gfc_level = 1
-            fx.level_2_reasons = []
-            fx.level_3_reasons = []
-            fx.level_description = "1级分型"
-            fx.enhancement_summary = "基础分型"
+        fx_id = id(fx)  # 使用对象ID作为键
         
         # 基于价格幅度判断级别
         price_amplitude = abs(fx.high - fx.low)
         
         if price_amplitude > atr * 2:  # 价格幅度大于2倍ATR
-            fx.gfc_level = 3
-            fx.level_3_reasons = ['价格幅度极大', '可能为关键转折点']
-            fx.level_description = "3级分型（关键）"
-            fx.enhancement_summary = "关键转折分型"
+            fx_levels[fx_id] = {
+                'gfc_level': 3,
+                'level_3_reasons': ['价格幅度极大', '可能为关键转折点'],
+                'level_description': "3级分型（关键）",
+                'enhancement_summary': "关键转折分型"
+            }
             enhanced_count += 1
         elif price_amplitude > atr * 1.2:  # 价格幅度大于1.2倍ATR
-            fx.gfc_level = 2
-            fx.level_2_reasons = ['价格幅度较大', '技术意义显著']
-            fx.level_description = "2级分型（重要）"
-            fx.enhancement_summary = "重要技术分型"
+            fx_levels[fx_id] = {
+                'gfc_level': 2,
+                'level_2_reasons': ['价格幅度较大', '技术意义显著'],
+                'level_description': "2级分型（重要）",
+                'enhancement_summary': "重要技术分型"
+            }
             enhanced_count += 1
         elif i % 5 == 0:  # 每5个分型提升一个为2级
-            fx.gfc_level = 2
-            fx.level_2_reasons = ['位置重要性']
-            fx.level_description = "2级分型（位置）"
-            fx.enhancement_summary = "位置重要分型"
+            fx_levels[fx_id] = {
+                'gfc_level': 2,
+                'level_2_reasons': ['位置重要性'],
+                'level_description': "2级分型（位置）",
+                'enhancement_summary': "位置重要分型"
+            }
             enhanced_count += 1
+        else:
+            fx_levels[fx_id] = {
+                'gfc_level': 1,
+                'level_2_reasons': [],
+                'level_3_reasons': [],
+                'level_description': "1级分型",
+                'enhancement_summary': "基础分型"
+            }
     
     print(f"   增强了 {enhanced_count} 个分型的级别")
     
     # 统计级别分布
     level_stats = {}
     for fx in czsc.fx_list:
-        level = getattr(fx, 'gfc_level', 1)  # 如果没有级别属性，默认为1级
+        fx_id = id(fx)
+        level = fx_levels.get(fx_id, {}).get('gfc_level', 1)
         level_stats[level] = level_stats.get(level, 0) + 1
     
     for level, count in sorted(level_stats.items()):
         print(f"   {level}级分型: {count}个")
     
-    return czsc.fx_list
+    return fx_levels
 
 
 def create_professional_fvg_data(czsc):
     """创建专业级FVG数据（使用POI模块）"""
     print("\n🔳 生成FVG数据")
-    
-    # 使用POI模块的FVGDetector
-    from czsc.poi import FVGDetector
     
     fvg_detector = FVGDetector({
         'min_size_atr_factor': 0.1,  # 降低阈值以检测更多FVG
@@ -246,9 +262,6 @@ def create_professional_fvg_data(czsc):
 def create_professional_ob_data(czsc):
     """创建专业级Order Block数据（使用POI模块）"""
     print("\n📦 生成Order Block数据")
-    
-    # 使用POI模块的OBDetector
-    from czsc.poi import OBDetector
     
     ob_detector = OBDetector({
         'min_breakout_ratio': 1.2,  # 降低突破比例阈值
@@ -306,7 +319,7 @@ def create_professional_bs_data(czsc):
     return bs_data
 
 
-def prepare_professional_visualization_data(czsc, fvg_data, ob_data, bs_data):
+def prepare_professional_visualization_data(czsc, fvg_data, ob_data, bs_data, fx_levels=None):
     """准备专业级可视化数据"""
     print("\n📊 准备可视化数据")
     
@@ -342,15 +355,18 @@ def prepare_professional_visualization_data(czsc, fvg_data, ob_data, bs_data):
     # 增强分型数据
     fx_enhanced = []
     for fx in czsc.fx_list:
+        fx_id = id(fx)
+        fx_info = fx_levels.get(fx_id, {}) if fx_levels else {}
+        
         fx_enhanced.append({
             'dt': fx.dt,
             'fx': fx.fx,
-            'level': getattr(fx, 'gfc_level', 1),
+            'level': fx_info.get('gfc_level', 1),
             'mark': fx.mark.value,
-            'level_desc': getattr(fx, 'level_description', '1级分型'),
-            'enhancement_summary': getattr(fx, 'enhancement_summary', '基础分型'),
-            'level_2_reasons': getattr(fx, 'level_2_reasons', []),
-            'level_3_reasons': getattr(fx, 'level_3_reasons', []),
+            'level_desc': fx_info.get('level_description', '1级分型'),
+            'enhancement_summary': fx_info.get('enhancement_summary', '基础分型'),
+            'level_2_reasons': fx_info.get('level_2_reasons', []),
+            'level_3_reasons': fx_info.get('level_3_reasons', []),
             'open': getattr(fx, 'open', fx.fx),  # 如果没有open属性，使用fx值
             'close': getattr(fx, 'close', fx.fx),  # 如果没有close属性，使用fx值
             'high': getattr(fx, 'high', fx.fx),
@@ -793,7 +809,7 @@ def main():
         czsc = analyze_professional_czsc(bars)
         
         # 3. 增强分型级别
-        enhanced_fractals = enhance_fractal_levels(czsc)
+        fx_levels = enhance_fractal_levels(czsc)
         
         # 4. 生成增强组件数据
         fvg_data = create_professional_fvg_data(czsc)
@@ -801,7 +817,7 @@ def main():
         bs_data = create_professional_bs_data(czsc)
         
         # 5. 准备可视化数据
-        viz_data = prepare_professional_visualization_data(czsc, fvg_data, ob_data, bs_data)
+        viz_data = prepare_professional_visualization_data(czsc, fvg_data, ob_data, bs_data, fx_levels)
         
         # 6. 生成专业级可视化
         output_file = create_professional_visualization(viz_data)
@@ -835,7 +851,8 @@ def main():
             # 分型级别统计
             level_stats = {}
             for fx in czsc.fx_list:
-                level = getattr(fx, 'gfc_level', 1)
+                fx_id = id(fx)
+                level = fx_levels.get(fx_id, {}).get('gfc_level', 1)
                 level_stats[level] = level_stats.get(level, 0) + 1
             
             print(f"\n🏆 分型级别分布:")
